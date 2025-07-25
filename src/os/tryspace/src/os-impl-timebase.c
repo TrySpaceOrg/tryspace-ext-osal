@@ -40,6 +40,8 @@
 #include "os-shared-idmap.h"
 #include "os-shared-common.h"
 
+#include "simulith_time.h"
+
 /****************************************************************************************
                                 EXTERNAL FUNCTION PROTOTYPES
  ***************************************************************************************/
@@ -48,53 +50,15 @@
                                 INTERNAL FUNCTION PROTOTYPES
  ***************************************************************************************/
 
-static void OS_UsecToTimespec(uint32 usecs, struct timespec *time_spec);
-
 /****************************************************************************************
                                      DEFINES
  ***************************************************************************************/
-
-/*
- * Prefer to use the MONOTONIC clock if available, as it will not get disrupted by setting
- * the time like the REALTIME clock will.
- */
-#ifndef OS_PREFERRED_CLOCK
-#ifdef _POSIX_MONOTONIC_CLOCK
-#define OS_PREFERRED_CLOCK CLOCK_MONOTONIC
-#else
-#define OS_PREFERRED_CLOCK CLOCK_REALTIME
-#endif
-#endif
 
 /****************************************************************************************
                                      GLOBALS
  ***************************************************************************************/
 
 OS_impl_timebase_internal_record_t OS_impl_timebase_table[OS_MAX_TIMEBASES];
-
-/****************************************************************************************
-                                INTERNAL FUNCTIONS
- ***************************************************************************************/
-
-/*----------------------------------------------------------------
- *
- *  Purpose: Local helper routine, not part of OSAL API.
- *           Convert Microseconds to a POSIX timespec structure.
- *
- *-----------------------------------------------------------------*/
-static void OS_UsecToTimespec(uint32 usecs, struct timespec *time_spec)
-{
-    if (usecs < 1000000)
-    {
-        time_spec->tv_nsec = (usecs * 1000);
-        time_spec->tv_sec  = 0;
-    }
-    else
-    {
-        time_spec->tv_sec  = usecs / 1000000;
-        time_spec->tv_nsec = (usecs % 1000000) * 1000;
-    }
-}
 
 /*----------------------------------------------------------------
  *
@@ -131,14 +95,13 @@ void OS_TimeBaseUnlock_Impl(const OS_object_token_t *token)
  *  Purpose: Local helper routine, not part of OSAL API.
  *
  *-----------------------------------------------------------------*/
-static uint32 OS_TimeBase_SigWaitImpl(osal_id_t obj_id)
+static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
 {
     int                                 ret;
     OS_object_token_t                   token;
     OS_impl_timebase_internal_record_t *impl;
     OS_timebase_internal_record_t *     timebase;
     uint32                              interval_time;
-    int                                 sig;
 
     interval_time = 0;
 
@@ -147,12 +110,12 @@ static uint32 OS_TimeBase_SigWaitImpl(osal_id_t obj_id)
         impl     = OS_OBJECT_TABLE_GET(OS_impl_timebase_table, token);
         timebase = OS_OBJECT_TABLE_GET(OS_timebase_table, token);
 
-        ret = sigwait(&impl->sigset, &sig);
+        ret = simulith_time_wait_for_next_tick(impl->simulith_time_handle);
 
         if (ret != 0)
         {
             /*
-             * the sigwait call failed.
+             * the simulith_time_wait_for_next_tick call failed.
              * returning 0 will cause the process to repeat.
              */
         }
@@ -196,7 +159,6 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
     int                 status;
     osal_index_t        idx;
     pthread_mutexattr_t mutex_attr;
-    struct timespec     clock_resolution;
     int32               return_code;
 
     return_code = OS_SUCCESS;
@@ -209,31 +171,10 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
         memset(OS_impl_timebase_table, 0, sizeof(OS_impl_timebase_table));
 
         /*
-        ** get the resolution of the selected clock
+        ** For simulith time, we use a fixed resolution of INTERVAL_NS (10ms)
+        ** This is much more deterministic than POSIX clock resolution
         */
-        status = clock_getres(OS_PREFERRED_CLOCK, &clock_resolution);
-        if (status != 0)
-        {
-            OS_DEBUG("failed in clock_getres: %s\n", strerror(errno));
-            return_code = OS_ERROR;
-            break;
-        }
-
-        /*
-        ** Convert to microseconds
-        ** Note that the resolution MUST be in the sub-second range, if not then
-        ** it looks like the POSIX timer API in the C library is broken.
-        ** Note for any flavor of RTOS we would expect <= 1ms.  Even a "desktop"
-        ** linux or development system should be <= 100ms absolute worst-case.
-        */
-        if (clock_resolution.tv_sec > 0)
-        {
-            return_code = OS_TIMER_ERR_INTERNAL;
-            break;
-        }
-
-        /* Round to the nearest microsecond */
-        POSIX_GlobalVars.ClockAccuracyNsec = (uint32)(clock_resolution.tv_nsec);
+        POSIX_GlobalVars.ClockAccuracyNsec = 10000000; /* 10ms in nanoseconds */
 
         /*
         ** initialize the attribute with default values
@@ -274,24 +215,15 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
         }
 
         /*
-         * Pre-calculate the clock tick to microsecond conversion factor.
+         * For simulith time, we simulate the tick rate based on INTERVAL_NS
+         * This gives us 100 ticks per second (10ms intervals)
          */
-        OS_SharedGlobalVars.TicksPerSecond = sysconf(_SC_CLK_TCK);
-        if (OS_SharedGlobalVars.TicksPerSecond <= 0)
-        {
-            OS_DEBUG("Error: Unable to determine OS ticks per second: %s\n", strerror(errno));
-            return_code = OS_ERROR;
-            break;
-        }
-
+        OS_SharedGlobalVars.TicksPerSecond = 100;
+        
         /*
-         * Calculate microseconds per tick
-         *  - If the ratio is not an integer, this will round to the nearest integer value
-         *  - This is used internally for reporting accuracy,
-         *  - TicksPerSecond values over 2M will return zero
+         * Calculate microseconds per tick: 10ms = 10000 microseconds
          */
-        OS_SharedGlobalVars.MicroSecPerTick =
-            (1000000 + (OS_SharedGlobalVars.TicksPerSecond / 2)) / OS_SharedGlobalVars.TicksPerSecond;
+        OS_SharedGlobalVars.MicroSecPerTick = 10000;
     } while (0);
 
     return return_code;
@@ -322,10 +254,6 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
 {
     int32                               return_code;
     int                                 status;
-    int                                 i;
-    osal_index_t                        idx;
-    struct sigevent                     evp;
-    struct timespec                     ts;
     OS_impl_timebase_internal_record_t *local;
     OS_timebase_internal_record_t *     timebase;
     OS_VoidPtrValueWrapper_t            arg;
@@ -337,7 +265,7 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
      * Spawn a dedicated time base handler thread
      *
      * This alleviates the need to handle expiration in the context of a signal handler -
-     * The handler thread can call a BSP synchronized delay implementation as well as the
+     * The handler thread can call simulith synchronized delay implementation as well as the
      * application callback function.  It should run with elevated priority to reduce latency.
      *
      * Note the thread will not actually start running until this function exits and releases
@@ -354,124 +282,22 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
         return return_code;
     }
 
-    local->assigned_signal = 0;
-
     /*
-     * Set up the necessary OS constructs
-     *
-     * If an external sync function is used then there is nothing to do here -
-     * we simply call that function and it should synchronize to the time source.
-     *
-     * If no external sync function is provided then this will set up a POSIX
-     * timer to locally simulate the timer tick using the CPU clock.
+     * Initialize simulith time provider
+     * 
+     * This replaces the POSIX timer setup with simulith time provider initialization
      */
     if (timebase->external_sync == NULL)
     {
-        sigemptyset(&local->sigset);
-
-        /*
-         * find an RT signal that is not used by another time base object.
-         * This is all done while the global lock is held so no chance of the
-         * underlying tables changing
-         */
-        for (idx = 0; idx < OS_MAX_TIMEBASES; ++idx)
+        local->simulith_time_handle = simulith_time_init();
+        if (local->simulith_time_handle == NULL)
         {
-            if (OS_ObjectIdIsValid(OS_global_timebase_table[idx].active_id) &&
-                OS_impl_timebase_table[idx].assigned_signal != 0)
-            {
-                sigaddset(&local->sigset, OS_impl_timebase_table[idx].assigned_signal);
-            }
+            OS_DEBUG("Failed to initialize simulith time provider\n");
+            pthread_cancel(local->handler_thread);
+            return OS_TIMER_ERR_UNAVAILABLE;
         }
 
-        for (i = SIGRTMIN; i <= SIGRTMAX; ++i)
-        {
-            if (!sigismember(&local->sigset, i))
-            {
-                local->assigned_signal = i;
-                break;
-            }
-        }
-
-        do
-        {
-            if (local->assigned_signal == 0)
-            {
-                OS_DEBUG("No free RT signals to use for simulated time base\n");
-                return_code = OS_TIMER_ERR_UNAVAILABLE;
-                break;
-            }
-
-            sigemptyset(&local->sigset);
-            sigaddset(&local->sigset, local->assigned_signal);
-
-            /*
-             * Ensure that the chosen signal is NOT already pending.
-             *
-             * Perform a "sigtimedwait" with a zero timeout to poll the
-             * status of the selected signal.  RT signals are also queued,
-             * so this needs to be called in a loop to until sigtimedwait()
-             * returns an error.
-             *
-             * The max number of signals that can be queued is available
-             * via sysconf() as the _SC_SIGQUEUE_MAX value.
-             *
-             * The output is irrelevant here; the objective is to just ensure
-             * that the signal is not already pending.
-             */
-            i = sysconf(_SC_SIGQUEUE_MAX);
-            do
-            {
-                ts.tv_sec  = 0;
-                ts.tv_nsec = 0;
-                if (sigtimedwait(&local->sigset, NULL, &ts) < 0)
-                {
-                    /* signal is NOT pending */
-                    break;
-                }
-                --i;
-            } while (i > 0);
-
-            /*
-            **  Initialize the sigevent structures for the handler.
-            */
-            memset((void *)&evp, 0, sizeof(evp));
-            evp.sigev_notify = SIGEV_SIGNAL;
-            evp.sigev_signo  = local->assigned_signal;
-
-            /*
-             * Pass the Timer Index value of the object ID to the signal handler --
-             *  Note that the upper bits can be safely assumed as a timer ID to recreate the original,
-             *  and doing it this way should still work on a system where sizeof(sival_int) < sizeof(uint32)
-             *  (as long as sizeof(sival_int) >= number of bits in OS_OBJECT_INDEX_MASK)
-             */
-            evp.sigev_value.sival_int = (int)OS_ObjectIdToSerialNumber_Impl(OS_ObjectIdFromToken(token));
-
-            /*
-            ** Create the timer
-            ** Note using the "MONOTONIC" clock here as this will still produce consistent intervals
-            ** even if the system clock is stepped (e.g. clock_settime).
-            */
-            status = timer_create(OS_PREFERRED_CLOCK, &evp, &local->host_timerid);
-            if (status < 0)
-            {
-                return_code = OS_TIMER_ERR_UNAVAILABLE;
-                break;
-            }
-
-            timebase->external_sync = OS_TimeBase_SigWaitImpl;
-        } while (0);
-    }
-
-    if (return_code != OS_SUCCESS)
-    {
-        /*
-         * NOTE about the thread cancellation -- this technically is just a backup,
-         * we should not need to cancel it because the handler thread will exit automatically
-         * if the active ID does not match the expected value.  This check would fail
-         * if this function returns non-success (the ID in the global will be set zero)
-         */
-        pthread_cancel(local->handler_thread);
-        local->assigned_signal = 0;
+        timebase->external_sync = OS_TimeBase_SimulithWaitImpl;
     }
 
     return return_code;
@@ -486,44 +312,29 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
 int32 OS_TimeBaseSet_Impl(const OS_object_token_t *token, uint32 start_time, uint32 interval_time)
 {
     OS_impl_timebase_internal_record_t *local;
-    struct itimerspec                   timeout;
     int32                               return_code;
-    int                                 status;
     OS_timebase_internal_record_t *     timebase;
 
     local       = OS_OBJECT_TABLE_GET(OS_impl_timebase_table, *token);
     timebase    = OS_OBJECT_TABLE_GET(OS_timebase_table, *token);
     return_code = OS_SUCCESS;
 
-    /* There is only something to do here if we are generating a simulated tick */
-    if (local->assigned_signal != 0)
+    /*
+     * For simulith time, we don't need to program hardware timers.
+     * The timing is controlled by the simulith time provider.
+     * We just set the accuracy based on the fixed 10ms interval.
+     */
+    if (local->simulith_time_handle != NULL)
     {
-        /*
-        ** Convert from Microseconds to timespec structures
-        */
-        memset(&timeout, 0, sizeof(timeout));
-        OS_UsecToTimespec(start_time, &timeout.it_value);
-        OS_UsecToTimespec(interval_time, &timeout.it_interval);
-
-        /*
-        ** Program the real timer
-        */
-        status = timer_settime(local->host_timerid, 0, /* Flags field can be zero */
-                               &timeout,               /* struct itimerspec */
-                               NULL);                  /* Oldvalue */
-
-        if (status < 0)
+        if (interval_time > 0)
         {
-            OS_DEBUG("Error in timer_settime: %s\n", strerror(errno));
-            return_code = OS_TIMER_ERR_INTERNAL;
-        }
-        else if (interval_time > 0)
-        {
-            timebase->accuracy_usec = (uint32)((timeout.it_interval.tv_nsec + 999) / 1000);
+            /* Use the requested interval, but note simulith runs at 10ms ticks */
+            timebase->accuracy_usec = interval_time;
         }
         else
         {
-            timebase->accuracy_usec = (uint32)((timeout.it_value.tv_nsec + 999) / 1000);
+            /* One-shot timer uses start time */
+            timebase->accuracy_usec = start_time;
         }
     }
 
@@ -540,25 +351,18 @@ int32 OS_TimeBaseSet_Impl(const OS_object_token_t *token, uint32 start_time, uin
 int32 OS_TimeBaseDelete_Impl(const OS_object_token_t *token)
 {
     OS_impl_timebase_internal_record_t *local;
-    int                                 status;
 
     local = OS_OBJECT_TABLE_GET(OS_impl_timebase_table, *token);
 
     pthread_cancel(local->handler_thread);
 
     /*
-    ** Delete the timer
+    ** Clean up simulith time provider
     */
-    if (local->assigned_signal != 0)
+    if (local->simulith_time_handle != NULL)
     {
-        status = timer_delete(local->host_timerid);
-        if (status < 0)
-        {
-            OS_DEBUG("Error deleting timer: %s\n", strerror(errno));
-            return OS_TIMER_ERR_INTERNAL;
-        }
-
-        local->assigned_signal = 0;
+        simulith_time_cleanup(local->simulith_time_handle);
+        local->simulith_time_handle = NULL;
     }
 
     return OS_SUCCESS;

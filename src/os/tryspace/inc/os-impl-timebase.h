@@ -34,9 +34,7 @@ typedef struct
 {
     pthread_t       handler_thread;
     pthread_mutex_t handler_mutex;
-    timer_t         host_timerid;
-    int             assigned_signal;
-    sigset_t        sigset;
+    void*           simulith_time_handle;  // Simulith time provider handle
     sig_atomic_t    reset_flag;
 } OS_impl_timebase_internal_record_t;
 

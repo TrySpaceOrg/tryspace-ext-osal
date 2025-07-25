@@ -8,19 +8,19 @@
 
 # The basic set of files which are always built
 set(POSIX_BASE_SRCLIST
-    src/os-impl-binsem.c
-    src/os-impl-common.c
-    src/os-impl-console.c
-    src/os-impl-condvar.c
-    src/os-impl-countsem.c
-    src/os-impl-dirs.c
-    src/os-impl-errors.c
-    src/os-impl-files.c
-    src/os-impl-filesys.c
-    src/os-impl-heap.c
-    src/os-impl-idmap.c
-    src/os-impl-mutex.c
-    src/os-impl-queues.c
+    ../posix/src/os-impl-binsem.c
+    ../posix/src/os-impl-common.c
+    ../posix/src/os-impl-console.c
+    ../posix/src/os-impl-condvar.c
+    ../posix/src/os-impl-countsem.c
+    ../posix/src/os-impl-dirs.c
+    ../posix/src/os-impl-errors.c
+    ../posix/src/os-impl-files.c
+    ../posix/src/os-impl-filesys.c
+    ../posix/src/os-impl-heap.c
+    ../posix/src/os-impl-idmap.c
+    ../posix/src/os-impl-mutex.c
+    ../posix/src/os-impl-queues.c
     src/os-impl-tasks.c
     src/os-impl-timebase.c
 )
@@ -38,7 +38,7 @@ set(POSIX_IMPL_SRCLIST
 
 if (OSAL_CONFIG_INCLUDE_SHELL)
     list(APPEND POSIX_IMPL_SRCLIST
-       src/os-impl-shell.c
+       ../posix/src/os-impl-shell.c
     )
 else ()
     list(APPEND POSIX_IMPL_SRCLIST
@@ -82,7 +82,11 @@ add_library(osal_posix_impl OBJECT
 
 target_include_directories(osal_posix_impl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
+    ${CMAKE_SOURCE_DIR}/simulith/include
 )
 target_compile_definitions(osal_public_api INTERFACE
     _POSIX_OS_
 )
+
+# Link with simulith for time provider
+target_link_libraries(osal_public_api INTERFACE simulith)

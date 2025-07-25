@@ -36,6 +36,8 @@
 #include "os-shared-task.h"
 #include "os-shared-idmap.h"
 
+#include "simulith_time.h"
+
 /*
  * Extra Stack Space for overhead -
  *
@@ -726,24 +728,34 @@ void OS_TaskExit_Impl()
  *-----------------------------------------------------------------*/
 int32 OS_TaskDelay_Impl(uint32 millisecond)
 {
-    struct timespec sleep_end;
-    int             status;
-
-    clock_gettime(CLOCK_MONOTONIC, &sleep_end);
-    sleep_end.tv_sec += millisecond / 1000;
-    sleep_end.tv_nsec += 1000000 * (millisecond % 1000);
-
-    if (sleep_end.tv_nsec >= 1000000000)
-    {
-        sleep_end.tv_nsec -= 1000000000;
-        ++sleep_end.tv_sec;
-    }
-
+    /*
+     * For simulith integration, we use a simple approach:
+     * - Convert milliseconds to simulation ticks (10ms per tick)
+     * - Use nanosleep() with simulation-synchronized delays
+     * 
+     * Note: In a full simulith integration, this could be enhanced to
+     * synchronize with the simulation tick, but for now we use a 
+     * fixed 10ms tick assumption.
+     */
+    uint32 ticks_needed;
+    uint32 sleep_ms;
+    struct timespec sleep_time;
+    int status;
+    
+    /* Calculate number of simulation ticks needed (10ms per tick) */
+    ticks_needed = (millisecond + 9) / 10; /* Round up */
+    sleep_ms = ticks_needed * 10; /* Convert back to milliseconds */
+    
+    /* Convert to timespec */
+    sleep_time.tv_sec = sleep_ms / 1000;
+    sleep_time.tv_nsec = (sleep_ms % 1000) * 1000000L;
+    
+    /* Use nanosleep instead of absolute time for simulith compatibility */
     do
     {
-        status = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &sleep_end, NULL);
+        status = nanosleep(&sleep_time, &sleep_time);
     }
-    while (status == EINTR);
+    while (status == -1 && errno == EINTR);
 
     if (status != 0)
     {
