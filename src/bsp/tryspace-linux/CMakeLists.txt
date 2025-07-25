@@ -6,7 +6,7 @@
 
 # This basic implementation library should be generic enough to use
 # on any Linux-based processor board, as well as a standard development PC.
-add_library(osal_generic-linux_impl OBJECT
+add_library(osal_tryspace-linux_impl OBJECT
 	../generic-linux/src/bsp_start.c
 	../generic-linux/src/bsp_console.c
 )
@@ -32,7 +32,7 @@ target_link_libraries(osal_public_api INTERFACE
 
 # This BSP only works with "posix" OS layer.
 # Confirming this reduces risk of accidental misconfiguration
-set_property(TARGET osal_generic-linux_impl PROPERTY OSAL_EXPECTED_OSTYPE "tryspace")
+set_property(TARGET osal_tryspace-linux_impl PROPERTY OSAL_EXPECTED_OSTYPE "tryspace")
 
 # Configure the ut_coverage_compile and ut_coverage_link for enabling coverage
 # testing on this platform.

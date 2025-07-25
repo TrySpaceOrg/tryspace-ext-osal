@@ -29,6 +29,7 @@
 #include "osconfig.h"
 #include <pthread.h>
 #include <signal.h>
+#include "simulith_time.h"
 
 typedef struct
 {

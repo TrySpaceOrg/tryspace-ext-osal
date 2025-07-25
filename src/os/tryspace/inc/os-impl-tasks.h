@@ -31,6 +31,8 @@
 #include "osconfig.h"
 #include <pthread.h>
 
+#include "simulith_time.h"
+
 /*tasks */
 typedef struct
 {

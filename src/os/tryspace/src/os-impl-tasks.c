@@ -36,8 +36,6 @@
 #include "os-shared-task.h"
 #include "os-shared-idmap.h"
 
-#include "simulith_time.h"
-
 /*
  * Extra Stack Space for overhead -
  *

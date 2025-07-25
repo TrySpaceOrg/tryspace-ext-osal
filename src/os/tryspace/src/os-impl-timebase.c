@@ -40,8 +40,6 @@
 #include "os-shared-idmap.h"
 #include "os-shared-common.h"
 
-#include "simulith_time.h"
-
 /****************************************************************************************
                                 EXTERNAL FUNCTION PROTOTYPES
  ***************************************************************************************/
@@ -253,7 +251,6 @@ static void *OS_TimeBasePthreadEntry(void *arg)
 int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
 {
     int32                               return_code;
-    int                                 status;
     OS_impl_timebase_internal_record_t *local;
     OS_timebase_internal_record_t *     timebase;
     OS_VoidPtrValueWrapper_t            arg;

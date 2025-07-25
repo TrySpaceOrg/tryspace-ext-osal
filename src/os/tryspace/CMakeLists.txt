@@ -50,7 +50,7 @@ endif ()
 # then build the module loader
 if (OSAL_CONFIG_INCLUDE_DYNAMIC_LOADER)
     list(APPEND POSIX_IMPL_SRCLIST
-        src/os-impl-loader.c
+        ../posix/src/os-impl-loader.c
         ../portable/os-impl-posix-dl-loader.c
         ../portable/os-impl-posix-dl-symtab.c
     )
@@ -74,15 +74,33 @@ else()
     )
 endif ()
 
-# Defines an OBJECT target named "osal_posix_impl" with selected source files
-add_library(osal_posix_impl OBJECT
+# Defines an OBJECT target named "osal_tryspace_impl" with selected source files
+add_library(osal_tryspace_impl OBJECT
     ${POSIX_BASE_SRCLIST}
     ${POSIX_IMPL_SRCLIST}
 )
 
-target_include_directories(osal_posix_impl PRIVATE
+# Find ZeroMQ dependency
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(ZeroMQ REQUIRED libzmq)
+
+  # Find Simulith headers
+set(SIMULITH_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../simulith" CACHE PATH "Path to Simulith directory")
+if(NOT EXISTS "${SIMULITH_DIR}/include/simulith_time.h")
+    message(FATAL_ERROR "Could not find ${SIMULITH_DIR}/include/simulith_time.h
+    Please set SIMULITH_DIR to the correct path.")
+endif()
+
+# Only add Simulith subdirectory if not already added
+if(NOT TARGET simulith)
+# Set policy to NEW to allow external project linking
+cmake_policy(SET CMP0079 NEW)
+add_subdirectory(${SIMULITH_DIR} ${CMAKE_BINARY_DIR}/simulith)
+endif()
+
+target_include_directories(osal_tryspace_impl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
-    ${CMAKE_SOURCE_DIR}/simulith/include
+    ${SIMULITH_DIR}/include
 )
 target_compile_definitions(osal_public_api INTERFACE
     _POSIX_OS_
