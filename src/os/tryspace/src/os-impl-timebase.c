@@ -39,6 +39,7 @@
 #include "os-shared-timebase.h"
 #include "os-shared-idmap.h"
 #include "os-shared-common.h"
+#include "simulith.h"
 
 /****************************************************************************************
                                 EXTERNAL FUNCTION PROTOTYPES
@@ -57,6 +58,18 @@
  ***************************************************************************************/
 
 OS_impl_timebase_internal_record_t OS_impl_timebase_table[OS_MAX_TIMEBASES];
+
+/*
+ * Global flag to track if simulith client has been initialized
+ * Only initialize it once for the entire process
+ */
+static uint8_t simulith_client_initialized = 0;
+
+/*
+ * Reference count for active timebases using simulith
+ * When this reaches zero, we can shutdown the simulith client
+ */
+static int simulith_timebase_count = 0;
 
 /*----------------------------------------------------------------
  *
@@ -222,6 +235,33 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
          * Calculate microseconds per tick: 10ms = 10000 microseconds
          */
         OS_SharedGlobalVars.MicroSecPerTick = 10000;
+
+        /*
+         * Initialize simulith client if not already done
+         * This must be done once per process before any simulith_time_init() calls
+         */
+        if (simulith_client_initialized == 0)
+        {
+            status = simulith_client_init(CLIENT_PUB_ADDR, CLIENT_REP_ADDR, "tryspace-fsw", INTERVAL_NS);
+            if (status != 0)
+            {
+                OS_DEBUG("Error: simulith_client_init failed: %d\n", status);
+                return_code = OS_ERROR;
+                break;
+            }
+
+            status = simulith_client_handshake();
+            if (status != 0)
+            {
+                OS_DEBUG("Error: simulith_client_handshake failed: %d\n", status);
+                simulith_client_shutdown();
+                return_code = OS_ERROR;
+                break;
+            }
+
+            simulith_client_initialized = 1;
+            OS_DEBUG("Simulith client initialized successfully\n");
+        }
     } while (0);
 
     return return_code;
@@ -295,6 +335,10 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
         }
 
         timebase->external_sync = OS_TimeBase_SimulithWaitImpl;
+        
+        /* Increment reference count for simulith timebases */
+        simulith_timebase_count++;
+        OS_DEBUG("Simulith timebase created, count now: %d\n", simulith_timebase_count);
     }
 
     return return_code;
@@ -360,6 +404,19 @@ int32 OS_TimeBaseDelete_Impl(const OS_object_token_t *token)
     {
         simulith_time_cleanup(local->simulith_time_handle);
         local->simulith_time_handle = NULL;
+        
+        /* Decrement reference count */
+        simulith_timebase_count--;
+        OS_DEBUG("Simulith timebase deleted, count now: %d\n", simulith_timebase_count);
+        
+        /* If this was the last timebase, shutdown the simulith client */
+        if (simulith_timebase_count <= 0 && simulith_client_initialized == 1)
+        {
+            simulith_client_shutdown();
+            simulith_client_initialized = 0;
+            simulith_timebase_count = 0; /* Ensure it doesn't go negative */
+            OS_DEBUG("Simulith client shutdown - all timebases deleted\n");
+        }
     }
 
     return OS_SUCCESS;
