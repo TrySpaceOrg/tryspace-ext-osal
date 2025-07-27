@@ -40,6 +40,8 @@
 #include "os-shared-idmap.h"
 #include "os-shared-common.h"
 #include "simulith.h"
+#include <unistd.h>
+#include <stdbool.h>
 
 /****************************************************************************************
                                 EXTERNAL FUNCTION PROTOTYPES
@@ -70,6 +72,44 @@ static uint8_t simulith_client_initialized = 0;
  * When this reaches zero, we can shutdown the simulith client
  */
 static int simulith_timebase_count = 0;
+
+/*
+ * Shared tick distribution mechanism
+ * Since Simulith expects only one client to wait for ticks, we need
+ * a single master receiver that distributes ticks to all timebases
+ */
+static pthread_t tick_distribution_thread;
+static uint64_t latest_tick_time_ns = 0;
+static pthread_mutex_t tick_mutex;
+static pthread_cond_t tick_condition;
+static volatile bool tick_thread_running = false;
+
+/*
+ * Master tick receiver thread
+ * This thread receives ticks from Simulith and distributes them to all timebases
+ */
+static void* OS_SimulithTickDistributionThread(void* arg)
+{
+    uint64_t tick_time_ns;
+    
+    while (tick_thread_running)
+    {
+        if (simulith_client_wait_for_tick(&tick_time_ns) == 0)
+        {
+            pthread_mutex_lock(&tick_mutex);
+            latest_tick_time_ns = tick_time_ns;
+            pthread_cond_broadcast(&tick_condition);
+            pthread_mutex_unlock(&tick_mutex);
+        }
+        else
+        {
+            /* If tick wait fails, sleep briefly to avoid spinning */
+            usleep(1000);
+        }
+    }
+    
+    return NULL;
+}
 
 /*----------------------------------------------------------------
  *
@@ -108,7 +148,6 @@ void OS_TimeBaseUnlock_Impl(const OS_object_token_t *token)
  *-----------------------------------------------------------------*/
 static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
 {
-    int                                 ret;
     OS_object_token_t                   token;
     OS_impl_timebase_internal_record_t *impl;
     OS_timebase_internal_record_t *     timebase;
@@ -121,16 +160,12 @@ static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
         impl     = OS_OBJECT_TABLE_GET(OS_impl_timebase_table, token);
         timebase = OS_OBJECT_TABLE_GET(OS_timebase_table, token);
 
-        ret = simulith_time_wait_for_next_tick(impl->simulith_time_handle);
+        /* Wait for the next tick from the shared distribution thread */
+        pthread_mutex_lock(&tick_mutex);
+        pthread_cond_wait(&tick_condition, &tick_mutex);
+        pthread_mutex_unlock(&tick_mutex);
 
-        if (ret != 0)
-        {
-            /*
-             * the simulith_time_wait_for_next_tick call failed.
-             * returning 0 will cause the process to repeat.
-             */
-        }
-        else if (impl->reset_flag == 0)
+        if (impl->reset_flag == 0)
         {
             /*
              * Normal steady-state behavior.
@@ -259,8 +294,42 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
                 break;
             }
 
+            /* Initialize tick distribution synchronization */
+            status = pthread_mutex_init(&tick_mutex, NULL);
+            if (status != 0)
+            {
+                OS_DEBUG("Error: pthread_mutex_init failed: %s\n", strerror(status));
+                simulith_client_shutdown();
+                return_code = OS_ERROR;
+                break;
+            }
+
+            status = pthread_cond_init(&tick_condition, NULL);
+            if (status != 0)
+            {
+                OS_DEBUG("Error: pthread_cond_init failed: %s\n", strerror(status));
+                pthread_mutex_destroy(&tick_mutex);
+                simulith_client_shutdown();
+                return_code = OS_ERROR;
+                break;
+            }
+
+            /* Start the tick distribution thread */
+            tick_thread_running = true;
+            status = pthread_create(&tick_distribution_thread, NULL, OS_SimulithTickDistributionThread, NULL);
+            if (status != 0)
+            {
+                OS_DEBUG("Error: pthread_create for tick distribution failed: %s\n", strerror(status));
+                tick_thread_running = false;
+                pthread_cond_destroy(&tick_condition);
+                pthread_mutex_destroy(&tick_mutex);
+                simulith_client_shutdown();
+                return_code = OS_ERROR;
+                break;
+            }
+
             simulith_client_initialized = 1;
-            OS_DEBUG("Simulith client initialized successfully\n");
+            OS_DEBUG("Simulith client initialized successfully with tick distribution thread\n");
         }
     } while (0);
 
@@ -320,20 +389,14 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
     }
 
     /*
-     * Initialize simulith time provider
+     * Use simulith client for tick synchronization
      * 
-     * This replaces the POSIX timer setup with simulith time provider initialization
+     * This replaces the separate simulith_time_init() approach with 
+     * the shared client connection that properly participates in the tick protocol
      */
     if (timebase->external_sync == NULL)
     {
-        local->simulith_time_handle = simulith_time_init();
-        if (local->simulith_time_handle == NULL)
-        {
-            OS_DEBUG("Failed to initialize simulith time provider\n");
-            pthread_cancel(local->handler_thread);
-            return OS_TIMER_ERR_UNAVAILABLE;
-        }
-
+        /* Set the external sync function to use simulith client ticks */
         timebase->external_sync = OS_TimeBase_SimulithWaitImpl;
         
         /* Increment reference count for simulith timebases */
@@ -398,28 +461,29 @@ int32 OS_TimeBaseDelete_Impl(const OS_object_token_t *token)
     pthread_cancel(local->handler_thread);
 
     /*
-    ** Clean up simulith time provider
+    ** Clean up simulith timebase reference
     */
-    if (local->simulith_time_handle != NULL)
-    {
-        simulith_time_cleanup(local->simulith_time_handle);
-        local->simulith_time_handle = NULL;
-        
-        /* Decrement reference count */
-        simulith_timebase_count--;
-        OS_DEBUG("Simulith timebase deleted, count now: %d\n", simulith_timebase_count);
-        
+    /* Decrement reference count */
+    simulith_timebase_count--;
+    OS_DEBUG("Simulith timebase deleted, count now: %d\n", simulith_timebase_count);
+    
         /* If this was the last timebase, shutdown the simulith client */
         if (simulith_timebase_count <= 0 && simulith_client_initialized == 1)
         {
+            /* Stop the tick distribution thread */
+            tick_thread_running = false;
+            pthread_cancel(tick_distribution_thread);
+            pthread_join(tick_distribution_thread, NULL);
+            
+            /* Clean up synchronization objects */
+            pthread_cond_destroy(&tick_condition);
+            pthread_mutex_destroy(&tick_mutex);
+            
             simulith_client_shutdown();
             simulith_client_initialized = 0;
             simulith_timebase_count = 0; /* Ensure it doesn't go negative */
             OS_DEBUG("Simulith client shutdown - all timebases deleted\n");
-        }
-    }
-
-    return OS_SUCCESS;
+        }    return OS_SUCCESS;
 }
 
 /*----------------------------------------------------------------
