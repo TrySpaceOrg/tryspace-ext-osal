@@ -35,6 +35,16 @@
 
 #include "os-shared-task.h"
 #include "os-shared-idmap.h"
+#include "simulith.h"
+
+/*
+ * External references to shared tick distribution mechanism from os-impl-timebase.c
+ * These allow OS_TaskDelay to synchronize with Simulith time
+ */
+extern pthread_mutex_t tick_mutex;
+extern pthread_cond_t tick_condition;
+extern volatile bool tick_thread_running;
+extern volatile uint64_t tick_generation;
 
 /*
  * Extra Stack Space for overhead -
@@ -727,42 +737,68 @@ void OS_TaskExit_Impl()
 int32 OS_TaskDelay_Impl(uint32 millisecond)
 {
     /*
-     * For simulith integration, we use a simple approach:
-     * - Convert milliseconds to simulation ticks (10ms per tick)
-     * - Use nanosleep() with simulation-synchronized delays
-     * 
-     * Note: In a full simulith integration, this could be enhanced to
-     * synchronize with the simulation tick, but for now we use a 
-     * fixed 10ms tick assumption.
+     * Use Simulith tick synchronization instead of real-time nanosleep
+     * to ensure child tasks stay synchronized with simulation time
      */
-    uint32 ticks_needed;
-    uint32 sleep_ms;
-    struct timespec sleep_time;
-    int status;
-    
-    /* Calculate number of simulation ticks needed (10ms per tick) */
-    ticks_needed = (millisecond + 9) / 10; /* Round up */
-    sleep_ms = ticks_needed * 10; /* Convert back to milliseconds */
-    
-    /* Convert to timespec */
-    sleep_time.tv_sec = sleep_ms / 1000;
-    sleep_time.tv_nsec = (sleep_ms % 1000) * 1000000L;
-    
-    /* Use nanosleep instead of absolute time for simulith compatibility */
-    do
+    if (!tick_thread_running)
     {
-        status = nanosleep(&sleep_time, &sleep_time);
-    }
-    while (status == -1 && errno == EINTR);
-
-    if (status != 0)
-    {
-        return OS_ERROR;
-    }
-    else
-    {
+        /* Fallback to nanosleep if Simulith isn't running */
+        struct timespec sleep_time;
+        sleep_time.tv_sec = millisecond / 1000;
+        sleep_time.tv_nsec = (millisecond % 1000) * 1000000L;
+        int status;
+        do
+        {
+            status = nanosleep(&sleep_time, &sleep_time);
+        }
+        while (status == -1 && errno == EINTR);
+        
+        if (status != 0)
+        {
+            return OS_ERROR;
+        }
         return OS_SUCCESS;
     }
+
+    /*
+     * For Simulith time, we need to delay for the correct amount of simulation time,
+     * not real time. Each Simulith tick represents exactly 10ms of simulation time
+     * regardless of the simulation speed (1x, 256x, 0.25x, etc.)
+     * 
+     * Calculate how many simulation ticks to wait based on requested milliseconds
+     */
+    uint32 ticks_to_wait = (millisecond + 9) / 10; /* Round up to next tick boundary */
+    
+    if (ticks_to_wait == 0)
+    {
+        /* For delays less than 10ms, wait for at least one tick (10ms sim time) */
+        ticks_to_wait = 1;
+    }
+
+    //OS_DEBUG("OS_TaskDelay: requested %u ms, waiting %u ticks (%u ms sim time)\n", 
+    //         millisecond, ticks_to_wait, ticks_to_wait * 10);
+
+    pthread_mutex_lock(&tick_mutex);
+    
+    uint64_t start_generation = tick_generation;
+    uint64_t target_generation = start_generation + ticks_to_wait;
+    
+    /* 
+     * Wait for the required number of simulation ticks.
+     * This automatically handles any simulation speed:
+     * - At 1x speed: each tick takes ~10ms real time
+     * - At 256x speed: each tick takes ~0.04ms real time  
+     * - At 0.25x speed: each tick takes ~40ms real time
+     * But in all cases, we advance the same amount of simulation time
+     */
+    while (tick_generation < target_generation && tick_thread_running)
+    {
+        pthread_cond_wait(&tick_condition, &tick_mutex);
+    }
+    
+    pthread_mutex_unlock(&tick_mutex);
+    
+    return OS_SUCCESS;
 }
 
 /*----------------------------------------------------------------
