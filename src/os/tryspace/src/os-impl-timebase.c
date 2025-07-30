@@ -206,7 +206,7 @@ static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
             /* If interval time is not set yet, use a default to avoid spin loop */
             if (interval_time == 0)
             {
-                interval_time = 10000;  /* 10ms default interval */
+                interval_time = 10000;  /* 10ms = 10000 microseconds */
             }
         }
         else
@@ -221,7 +221,7 @@ static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
             /* If start time is not set yet, use a default to avoid spin loop */
             if (interval_time == 0)
             {
-                interval_time = 10000;  /* 10ms default start time */
+                interval_time = 10000;  /* 10ms = 10000 microseconds */
             }
             
             impl->reset_flag = 0;
@@ -266,10 +266,10 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
         memset(OS_impl_timebase_table, 0, sizeof(OS_impl_timebase_table));
 
         /*
-        ** For simulith time, we use a fixed resolution of INTERVAL_NS (10ms)
+        ** For simulith time, we use a fixed resolution of INTERVAL_NS (currently 10ms)
         ** This is much more deterministic than POSIX clock resolution
         */
-        POSIX_GlobalVars.ClockAccuracyNsec = 10000000; /* 10ms in nanoseconds */
+        POSIX_GlobalVars.ClockAccuracyNsec = INTERVAL_NS; /* Use simulith interval directly */
 
         /*
         ** initialize the attribute with default values
@@ -312,16 +312,15 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
         /*
          * For simulith time, we simulate the tick rate based on INTERVAL_NS
          * This gives us 100 ticks per second (10ms intervals)
+         * Use explicit values to avoid macro expansion issues
          */
-        OS_SharedGlobalVars.TicksPerSecond = 100;
+        OS_SharedGlobalVars.TicksPerSecond = 1000000000UL / (10UL * 1000000UL);
         
         /*
-         * Set microseconds per tick to a reasonable value for timer accuracy reporting.
-         * Even though Simulith runs at 10ms ticks, we can provide much finer timer
-         * resolution through the callback mechanism. Report 100 usec accuracy which
-         * should satisfy SCH requirements (needs < ~5000 usec accuracy).
+         * Set microseconds per tick based on INTERVAL_NS
+         * Convert nanoseconds to microseconds: 10ms = 10000 microseconds
          */
-        OS_SharedGlobalVars.MicroSecPerTick = 100;
+        OS_SharedGlobalVars.MicroSecPerTick = (10UL * 1000000UL) / 1000UL;
 
         /*
          * Initialize simulith client if not already done
@@ -329,7 +328,7 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
          */
         if (simulith_client_initialized == 0)
         {
-            status = simulith_client_init(CLIENT_PUB_ADDR, CLIENT_REP_ADDR, "tryspace-fsw", INTERVAL_NS);
+            status = simulith_client_init(LOCAL_PUB_ADDR, LOCAL_REP_ADDR, "tryspace-fsw", INTERVAL_NS);
             if (status != 0)
             {
                 OS_DEBUG("Error: simulith_client_init failed: %d\n", status);
@@ -478,7 +477,7 @@ int32 OS_TimeBaseSet_Impl(const OS_object_token_t *token, uint32 start_time, uin
     /*
      * For simulith time, we don't need to program hardware timers.
      * The timing is controlled by the simulith time provider.
-     * We just set the accuracy based on the fixed 10ms interval.
+     * We just set the accuracy based on the INTERVAL_NS interval.
      */
     if (interval_time > 0)
     {
