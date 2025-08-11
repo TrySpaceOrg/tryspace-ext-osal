@@ -102,12 +102,11 @@ static void* OS_SimulithTickDistributionThread(void* arg)
         if (simulith_client_wait_for_tick(&tick_time_ns) == 0)
         {
             tick_count++;
-            //if (tick_count % 1000 == 0)  /* Log every 1000 ticks (10 seconds) */
+            //if (tick_count % 100 == 0)  /* Log every 1 second */
             //{
-            //    OS_DEBUG("Tick distribution: received tick %u, time_ns: %lu\n", 
+            //    OS_DEBUG("[OSAL] Tick distribution: received tick %u, time_ns: %lu\n", 
             //             tick_count, (unsigned long)tick_time_ns);
             //}
-            
             pthread_mutex_lock(&tick_mutex);
             previous_tick_time_ns = latest_tick_time_ns;
             latest_tick_time_ns = tick_time_ns;
@@ -206,7 +205,7 @@ static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
             /* If interval time is not set yet, use a default to avoid spin loop */
             if (interval_time == 0)
             {
-                interval_time = 10000;  /* 10ms = 10000 microseconds */
+                interval_time = INTERVAL_NS / 1000;  /* 10ms = 10000 microseconds */
             }
         }
         else
@@ -221,7 +220,7 @@ static uint32 OS_TimeBase_SimulithWaitImpl(osal_id_t obj_id)
             /* If start time is not set yet, use a default to avoid spin loop */
             if (interval_time == 0)
             {
-                interval_time = 10000;  /* 10ms = 10000 microseconds */
+                interval_time = INTERVAL_NS / 1000;  /* 10ms = 10000 microseconds */
             }
             
             impl->reset_flag = 0;
@@ -314,13 +313,13 @@ int32 OS_Posix_TimeBaseAPI_Impl_Init(void)
          * This gives us 100 ticks per second (10ms intervals)
          * Use explicit values to avoid macro expansion issues
          */
-        OS_SharedGlobalVars.TicksPerSecond = 1000000000UL / (10UL * 1000000UL);
+        OS_SharedGlobalVars.TicksPerSecond = 1000000000UL / (10UL * INTERVAL_NS);
         
         /*
          * Set microseconds per tick based on INTERVAL_NS
          * Convert nanoseconds to microseconds: 10ms = 10000 microseconds
          */
-        OS_SharedGlobalVars.MicroSecPerTick = (10UL * 1000000UL) / 1000UL;
+        OS_SharedGlobalVars.MicroSecPerTick = (10UL * INTERVAL_NS) / 1000UL;
 
         /*
          * Initialize simulith client if not already done
