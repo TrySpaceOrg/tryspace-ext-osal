@@ -732,7 +732,8 @@ int32 OS_TaskDelay_Impl(uint32 millisecond)
     uint32 ticks_to_wait;
 
     /* Calculate the number of ticks to wait based on the requested milliseconds */
-    ticks_to_wait = (millisecond + 9) / 10; /* Round up to the next tick boundary */
+    /* Calculate the number of ticks to wait based on the requested milliseconds and actual tick interval */
+    ticks_to_wait = ( (millisecond * 1000000) + (INTERVAL_NS - 1) ) / INTERVAL_NS; /* Round up to the next tick boundary */
 
     if (ticks_to_wait == 0)
     {
