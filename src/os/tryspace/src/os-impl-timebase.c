@@ -37,6 +37,7 @@
 #include "os-impl-tasks.h"
 
 #include "os-shared-timebase.h"
+#include "os-shared-time.h"
 #include "os-shared-idmap.h"
 #include "os-shared-common.h"
 
@@ -53,7 +54,8 @@
 /****************************************************************************************
                                 INTERNAL FUNCTION PROTOTYPES
  ***************************************************************************************/
-
+static void *OS_TimeBaseThreadFunc(void *arg);
+ 
 /****************************************************************************************
                                      DEFINES
  ***************************************************************************************/
@@ -156,16 +158,26 @@ int32 OS_TimeBaseCreate_Impl(const OS_object_token_t *token)
 {
     int32                               return_code;
     OS_timebase_internal_record_t *     timebase;
+    OS_impl_timebase_internal_record_t *local;
+    pthread_t handler_thread;
 
     timebase = OS_OBJECT_TABLE_GET(OS_timebase_table, *token);
+    local = OS_OBJECT_TABLE_GET(OS_impl_timebase_table, *token);
 
-    /* Delegate tick synchronization to PSP */
+    /* Delegate tick synchronization to PSP and spawn handler thread */
     if (timebase->external_sync == NULL)
     {
-        /* Simulith client should already be initialized by OS_Posix_TimeBaseAPI_Impl_Init */
         timebase->external_sync = CFE_PSP_WaitForSimulithTick;
         simulith_timebase_count++;
-        return_code = OS_SUCCESS;
+
+        /* Create the handler thread */
+        return_code = pthread_create(&handler_thread, NULL, OS_TimeBaseThreadFunc, (void*)(uintptr_t)OS_ObjectIdFromToken(token));
+        if (return_code == 0) {
+            local->handler_thread = handler_thread;
+            return_code = OS_SUCCESS;
+        } else {
+            return_code = OS_ERROR;
+        }
     }
     else
     {
@@ -243,4 +255,50 @@ int32 OS_TimeBaseDelete_Impl(const OS_object_token_t *token)
 int32 OS_TimeBaseGetInfo_Impl(const OS_object_token_t *token, OS_timebase_prop_t *timer_prop)
 {
     return OS_SUCCESS;
+}
+
+/* Handler thread function for timebase */
+static void *OS_TimeBaseThreadFunc(void *arg) 
+{
+    osal_id_t timebase_id = (osal_id_t)(uintptr_t)arg;
+    OS_object_token_t tb_token;
+    OS_timebase_internal_record_t *tb;
+    OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_TIMEBASE, timebase_id, &tb_token);
+    tb = OS_OBJECT_TABLE_GET(OS_timebase_table, tb_token);
+    
+    /* Make this thread asynchronously cancellable */
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
+    pthread_setcanceltype(PTHREAD_CANCEL_ASYNCHRONOUS, NULL);
+
+    while (1)
+    {
+        if (tb->external_sync == NULL) {
+            break;
+        }
+        tb->external_sync(1);  /* Wait for 1 tick */
+        pthread_testcancel();
+
+        /* Lock callback ring during traversal */
+        OS_TimeBaseLock_Impl(&tb_token);
+        osal_id_t cb_id = tb->first_cb;
+        while (OS_ObjectIdDefined(cb_id))
+        {
+            OS_object_token_t cb_token;
+            OS_timecb_internal_record_t *cb;
+            if (OS_ObjectIdGetById(OS_LOCK_MODE_NONE, OS_OBJECT_TYPE_OS_TIMECB, cb_id, &cb_token) != OS_SUCCESS)
+                break;
+
+            cb = OS_OBJECT_TABLE_GET(OS_timecb_table, cb_token);
+            if (cb->callback_ptr)
+            {
+                cb->callback_ptr(cb_id, cb->callback_arg);
+            }
+
+            cb_id = cb->next_cb;
+            if (cb_id == tb->first_cb) break;
+        }
+        OS_TimeBaseUnlock_Impl(&tb_token);
+    }
+
+    return NULL;
 }

@@ -8,8 +8,6 @@
 
 # The basic set of files which are always built
 set(POSIX_BASE_SRCLIST
-    ../posix/src/os-impl-binsem.c
-    ../posix/src/os-impl-common.c
     ../posix/src/os-impl-console.c
     ../posix/src/os-impl-condvar.c
     ../posix/src/os-impl-countsem.c
@@ -21,6 +19,8 @@ set(POSIX_BASE_SRCLIST
     ../posix/src/os-impl-idmap.c
     ../posix/src/os-impl-mutex.c
     ../posix/src/os-impl-queues.c
+    src/os-impl-binsem.c
+    src/os-impl-common.c
     src/os-impl-tasks.c
     src/os-impl-timebase.c
 )
