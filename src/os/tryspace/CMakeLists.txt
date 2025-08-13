@@ -101,6 +101,7 @@ endif()
 target_include_directories(osal_tryspace_impl PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/inc
     ${SIMULITH_DIR}/include
+    ../../../../psp/fsw/tryspace/inc
 )
 target_compile_definitions(osal_public_api INTERFACE
     _POSIX_OS_

@@ -29,7 +29,7 @@
 #include "osconfig.h"
 #include <pthread.h>
 #include <signal.h>
-#include "simulith_time.h"
+#include "simulith.h"
 
 typedef struct
 {
@@ -44,5 +44,6 @@ typedef struct
  ***************************************************************************************/
 
 extern OS_impl_timebase_internal_record_t OS_impl_timebase_table[OS_MAX_TIMEBASES];
+extern pthread_t tick_distribution_thread;
 
 #endif /* OS_IMPL_TIMEBASE_H */

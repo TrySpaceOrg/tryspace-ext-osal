@@ -35,16 +35,9 @@
 
 #include "os-shared-task.h"
 #include "os-shared-idmap.h"
-#include "simulith.h"
 
-/*
- * External references to shared tick distribution mechanism from os-impl-timebase.c
- * These allow OS_TaskDelay to synchronize with Simulith time
- */
-extern pthread_mutex_t tick_mutex;
-extern pthread_cond_t tick_condition;
-extern volatile bool tick_thread_running;
-extern volatile uint64_t tick_generation;
+#include "cfe_psp_timebase.h"
+#include "simulith.h"
 
 /*
  * Extra Stack Space for overhead -
@@ -736,68 +729,20 @@ void OS_TaskExit_Impl()
  *-----------------------------------------------------------------*/
 int32 OS_TaskDelay_Impl(uint32 millisecond)
 {
-    /*
-     * Use Simulith tick synchronization instead of real-time nanosleep
-     * to ensure child tasks stay synchronized with simulation time
-     */
-    if (!tick_thread_running)
-    {
-        /* Fallback to nanosleep if Simulith isn't running */
-        struct timespec sleep_time;
-        sleep_time.tv_sec = millisecond / 1000;
-        sleep_time.tv_nsec = (millisecond % 1000) * 1000000L;
-        int status;
-        do
-        {
-            status = nanosleep(&sleep_time, &sleep_time);
-        }
-        while (status == -1 && errno == EINTR);
-        
-        if (status != 0)
-        {
-            return OS_ERROR;
-        }
-        return OS_SUCCESS;
-    }
+    uint32 ticks_to_wait;
 
-    /*
-     * For Simulith time, we need to delay for the correct amount of simulation time,
-     * not real time. Each Simulith tick represents exactly 10ms of simulation time
-     * regardless of the simulation speed (1x, 256x, 0.25x, etc.)
-     * 
-     * Calculate how many simulation ticks to wait based on requested milliseconds
-     */
-    uint32 ticks_to_wait = (millisecond + 9) / 10; /* Round up to next tick boundary */
-    
+    /* Calculate the number of ticks to wait based on the requested milliseconds */
+    ticks_to_wait = (millisecond + 9) / 10; /* Round up to the next tick boundary */
+
     if (ticks_to_wait == 0)
     {
-        /* For delays less than 10ms, wait for at least one tick (10ms sim time) */
+        /* Ensure at least one tick for delays less than 10ms */
         ticks_to_wait = 1;
     }
 
-    //OS_DEBUG("OS_TaskDelay: requested %u ms, waiting %u ticks (%u ms sim time)\n", 
-    //         millisecond, ticks_to_wait, ticks_to_wait * 10);
+    /* Delegate the tick wait to the PSP */
+    CFE_PSP_WaitForSimulithTick(ticks_to_wait);
 
-    pthread_mutex_lock(&tick_mutex);
-    
-    uint64_t start_generation = tick_generation;
-    uint64_t target_generation = start_generation + ticks_to_wait;
-    
-    /* 
-     * Wait for the required number of simulation ticks.
-     * This automatically handles any simulation speed:
-     * - At 1x speed: each tick takes ~10ms real time
-     * - At 256x speed: each tick takes ~0.04ms real time  
-     * - At 0.25x speed: each tick takes ~40ms real time
-     * But in all cases, we advance the same amount of simulation time
-     */
-    while (tick_generation < target_generation && tick_thread_running)
-    {
-        pthread_cond_wait(&tick_condition, &tick_mutex);
-    }
-    
-    pthread_mutex_unlock(&tick_mutex);
-    
     return OS_SUCCESS;
 }
 
