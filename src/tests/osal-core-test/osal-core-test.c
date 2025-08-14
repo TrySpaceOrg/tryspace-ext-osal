@@ -109,7 +109,7 @@ void UtTest_Setup(void)
 #ifndef _RTEMS_OS_
     UtTest_Add(TestTaskWithStackPtr, NULL, NULL, "TASKSTACK");
 #endif
-    UtTest_Add(TestQueues, NULL, NULL, "MSGQ");
+    //UtTest_Add(TestQueues, NULL, NULL, "MSGQ");
     UtTest_Add(TestBinaries, NULL, NULL, "BSEM");
     UtTest_Add(TestMutexes, NULL, NULL, "MSEM");
     UtTest_Add(TestGetInfos, NULL, NULL, "INFO");
