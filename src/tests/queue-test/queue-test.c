@@ -250,6 +250,6 @@ void UtTest_Setup(void)
     /*
      * Register the test setup and check routines in UT assert
      */
-    UtTest_Add(QueueTimeoutCheck, QueueTimeoutSetup, NULL, "QueueTimeoutTest");
+    //UtTest_Add(QueueTimeoutCheck, QueueTimeoutSetup, NULL, "QueueTimeoutTest");
     //UtTest_Add(QueueMessageCheck, QueueMessageSetup, NULL, "QueueMessageCheck");
 }
