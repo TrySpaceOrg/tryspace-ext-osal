@@ -575,7 +575,8 @@ static inline bool OS_TimeEqual(OS_time_t time1, OS_time_t time2)
  */
 static inline int8_t OS_TimeGetSign(OS_time_t time)
 {
-    return (time.ticks > 0) - (time.ticks < 0);
+    int sign = (time.ticks > 0) - (time.ticks < 0);
+    return (int8_t)sign;
 }
 
 /*-------------------------------------------------------------------------------------*/
