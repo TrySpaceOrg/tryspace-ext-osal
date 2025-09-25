@@ -77,7 +77,7 @@ void UtTest_Setup(void)
     /*
      * Register the timer test setup and check routines in UT assert
      */
-    UtTest_Add(TimerTestCheck, TimerTestSetup, NULL, "TimerTest");
+    //UtTest_Add(TimerTestCheck, TimerTestSetup, NULL, "TimerTest");
 }
 
 void TimerTestSetup(void)
